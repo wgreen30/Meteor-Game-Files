@@ -1,0 +1,294 @@
+import sys, time, pygame, random, os, warnings
+from pygame.locals import USEREVENT
+from pygame.locals import *
+warnings.filterwarnings("ignore", category=UserWarning, module="pygame.image")
+
+# Initialize Pygame
+pygame.init()
+
+
+# Constants
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 800
+FPS = 60
+SPACESHIP_SIZE = 40
+INITIAL_SPAWN_TIME = 5000
+MIN_SPAWN_TIME = 200
+DIFFICULTY_STEP = 1500
+
+# Setup screen
+screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+clock = pygame.time.Clock()
+
+# Set the window title
+pygame.display.set_caption('Meteor Game')
+
+# Set up the base path
+if getattr(sys, 'frozen', False):
+    base_path = sys._MEIPASS  # For bundled executables
+else:
+    base_path = os.path.dirname(__file__)  # For running from script
+
+# Load images and sounds
+space_ship_up = pygame.image.load(os.path.join(base_path, 'resources', 'space_ship.png')).convert_alpha()
+real_laser_copy = pygame.image.load(os.path.join(base_path, 'resources', 'game_laser02.png')).convert_alpha()
+ass = pygame.image.load(os.path.join(base_path, 'resources', 'supe.png')).convert_alpha()
+ass_sound = pygame.mixer.Sound(os.path.join(base_path, 'resources', 'ass_sound.mp3'))
+collision_sound = pygame.mixer.Sound(os.path.join(base_path, 'resources', 'collision_sound.mp3'))
+font = pygame.font.Font(os.path.join(base_path, 'resources', 'Infinite Realities.otf'), 30)
+SCORE_FILE = 'high_score.txt'
+
+
+
+
+# Load resources
+spaceship_image = pygame.Surface((SPACESHIP_SIZE, SPACESHIP_SIZE))
+spaceship_image.fill((255, 255, 255))
+spaceship = spaceship_image.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
+ship_speed = 4
+# Load spaceship images and rotate based on direction
+rspace = pygame.transform.rotate(space_ship_up, 270)
+dspace = pygame.transform.rotate(space_ship_up, 180)
+lspace = pygame.transform.rotate(space_ship_up, 90)
+upright = pygame.transform.rotate(space_ship_up, 315)
+upleft = pygame.transform.rotate(space_ship_up, 45)
+downright = pygame.transform.rotate(space_ship_up, 225)
+downleft = pygame.transform.rotate(space_ship_up, 135)
+
+real_spaceship = pygame.transform.scale(space_ship_up, (60, 60))
+
+#Create Lasers
+laser_surface = pygame.Surface((20, 40))
+laser = laser_surface.get_rect(center = (spaceship.center))
+laser_right = pygame.transform.scale(real_laser_copy, (48, 36))
+laser_down = pygame.transform.rotate(laser_right, 270)
+laser_left = pygame.transform.rotate(laser_right, 180)
+laser_up = pygame.transform.rotate(laser_right, 90)
+
+# Retry Button
+retry = pygame.Rect(315, 440, 150, 60)
+retry_shadow = pygame.Rect(315, 450, 150, 60)
+SAVE_TIME = time.time()
+
+# Initial Spawn Time
+spawn_time = INITIAL_SPAWN_TIME
+spawn_event = USEREVENT + 1
+pygame.time.set_timer(spawn_event, spawn_time)
+
+def load_high_score(file):
+    if not os.path.isfile(file):
+        return 0
+    with open(file, 'r') as f:
+        try:
+            return int(f.read().strip())
+        except ValueError:
+            return 0
+def save_high_score(file, score):
+    with open(file, 'w') as f:
+        f.write(str(score))
+
+# Load the high score
+high_score = load_high_score(SCORE_FILE)
+
+# Time tracking
+start_ticks = pygame.time.get_ticks()  # Store the starting time
+last_spawn_reduction = 0  # Variable to track the last spawn time reduction in seconds
+
+class Meteor:
+    def __init__(self, x, y, speed_x, speed_y, size):
+        self.rect = pygame.Rect(x, y, size, size)
+        self.speed_x = speed_x
+        self.speed_y = speed_y
+
+    def move(self):
+        self.rect.x += self.speed_x
+        self.rect.y += self.speed_y
+
+    def draw(self):
+        real_ass = pygame.transform.scale(ass, (self.rect.width + 10, self.rect.height + 10))
+        screen.blit(real_ass, self.rect.topleft)
+
+def handle_retry():
+    global spawn_time, meteors, SAVE_TIME, gameover, elapsed_seconds, last_spawn_reduction
+    spawn_time = INITIAL_SPAWN_TIME
+    pygame.time.set_timer(spawn_event, spawn_time)
+    SAVE_TIME = time.time()
+    meteors.clear()
+    gameover = False
+    elapsed_seconds = 0
+    last_spawn_reduction = 0
+
+# Game Variables
+meteors = []
+running = True
+elapsed_seconds = 0
+gameover = False
+gameover_count = 0
+ship_point_up, ship_point_down, ship_point_left, ship_point_right = None, None, None, None
+ship_point_upright, ship_point_downright, ship_point_upleft, ship_point_downleft = None, None, None, None
+ship_move_up, ship_move_down, ship_move_left, ship_move_right = None, None, None, None
+ship_move_upright, ship_move_upleft, ship_move_downright, ship_move_downleft = None, None, None, None
+move_init = False
+diag_size = (80, 80)
+
+#Print Instructions To Console
+print("Instructions: \n")
+print("The objective of this game is to stay alive as long as you can while dodging the incoming meteors.")
+print("You may use the arrow keys or ‘w’ ‘a’ ‘s’ ‘d’ keys to direct the spaceship")
+print("Good Luck!")
+
+# Game Loop
+while running:
+    ACTIVE_TIME = time.time()
+    elapsed_seconds = int(ACTIVE_TIME - SAVE_TIME)
+    mouse = pygame.mouse.get_pos()
+    keys = pygame.key.get_pressed()
+
+    for event in pygame.event.get():
+        if event.type == QUIT:
+            pygame.quit()
+            sys.exit()
+        if event.type == KEYDOWN:
+            if event.key == K_ESCAPE:
+                sys.exit(0)
+        #When user presses the retry button
+        if event.type == MOUSEBUTTONDOWN:
+            if retry.collidepoint(mouse):
+                handle_retry()
+
+        # Spawning asteroids randomly, and assigning random attributes
+        if event.type == spawn_event and not gameover:
+            # Generate random meteor parameters and add to meteors list
+            size = random.randint(20, 50)
+            side = random.choice(['left', 'right', 'top', 'bottom'])
+            if side == 'left':
+                x, y = -size, random.randint(0, SCREEN_HEIGHT)
+                speed_x, speed_y = random.randint(3, 9), random.randint(-2, 2)
+                ass_sound.play()
+            elif side == 'right':
+                x, y = SCREEN_WIDTH, random.randint(0, SCREEN_HEIGHT)
+                speed_x, speed_y = random.randint(-9, -3), random.randint(-2, 2)
+                ass_sound.play()
+            elif side == 'top':
+                x, y = random.randint(0, SCREEN_WIDTH), -size
+                speed_x, speed_y = random.randint(-2, 2), random.randint(3, 9)
+                ass_sound.play()
+            else:  # bottom
+                x, y = random.randint(0, SCREEN_WIDTH), SCREEN_HEIGHT
+                speed_x, speed_y = random.randint(-2, 2), random.randint(-9, -3)
+                ass_sound.play()
+            meteors.append(Meteor(x, y, speed_x, speed_y, size))
+        #Orientating and moving the spaceship
+    if keys[K_w] or keys[K_UP]:
+        ship_point_up = True
+        real_spaceship = pygame.transform.scale(space_ship_up, (60, 60))
+        real_laser = laser_up
+        ship_point_up = False
+        ship_move_left = False
+        ship_move_up = True
+        ship_move_right = False
+        ship_move_down = False
+        spaceship.y -= 5
+    if keys[K_s] or keys[K_DOWN]:
+        ship_point_down = True
+        real_spaceship = pygame.transform.scale(dspace, (60, 60))
+        real_laser = laser_down
+        ship_point_down = False
+        ship_move_left = False
+        ship_move_up = False
+        ship_move_right = False
+        ship_move_down = True
+        spaceship.y += 5
+    if keys[K_a] or keys[K_LEFT]:
+        ship_point_left = True
+        real_spaceship = pygame.transform.scale(lspace, (60, 60))
+        real_laser = laser_left
+        ship_point_left = False
+        ship_move_left = True
+        ship_move_up = False
+        ship_move_right = False
+        ship_move_down = False
+        spaceship.x -= 5
+    if keys[K_d] or keys[K_RIGHT]:
+        ship_point_right = True
+        real_spaceship = pygame.transform.scale(rspace, (60, 60))
+        real_laser = laser_right
+        ship_point_right = False
+        ship_move_left = False
+        ship_move_up = False
+        ship_move_right = True
+        ship_move_down = False
+        spaceship.x += 5
+    if keys[K_w] and keys[K_d] or keys[K_UP] and keys[K_RIGHT]:
+        real_spaceship = pygame.transform.scale(upright, (80, 80))
+        spaceship.x -= 1
+        spaceship.y += 1
+    if keys[K_w] and keys[K_a] or keys[K_UP] and keys[K_LEFT]:
+        real_spaceship = pygame.transform.scale(upleft, (80, 80))
+        spaceship.x += 1
+        spaceship.y += 1
+    if keys[K_s] and keys[K_d] or keys[K_DOWN] and keys[K_RIGHT]:
+        real_spaceship = pygame.transform.scale(downright, (80, 80))
+        spaceship.x -= 1
+        spaceship.y -= 1
+    if keys[K_s] and keys[K_a] or keys[K_DOWN] and keys[K_LEFT]:
+        real_spaceship = pygame.transform.scale(downleft, (80, 80))
+        spaceship.x += 1
+        spaceship.y -= 1
+    # Keep spaceship on screen
+    spaceship.y = max(0, min(spaceship.y, SCREEN_HEIGHT - SPACESHIP_SIZE))
+    spaceship.x = max(0, min(spaceship.x, SCREEN_WIDTH - SPACESHIP_SIZE))
+
+    # Clear screen
+    screen.fill((0, 0, 0))
+    #Draw SPaceship
+    screen.blit(real_spaceship, (spaceship.x - 10, spaceship.y - 10))
+    # Move and draw meteors
+    for meteor in meteors:
+        if not gameover:
+            meteor.move()
+            meteor.draw()
+        # Check for collisions
+        if spaceship.colliderect(meteor):
+            collision_sound.play()
+            gameover = True
+
+    if gameover:
+        spaceship.x = SCREEN_WIDTH // 2
+        spaceship.y = SCREEN_HEIGHT // 2
+        gameover_count += 1
+        DIFFICULTY_STEP = 1500
+        ship_point_up = True
+        SAVE_TIME = time.time()
+        pygame.draw.rect(screen, 'azure4', retry_shadow, 0, 10)
+        pygame.draw.rect(screen, 'azure3', retry, 0, 10)
+        retry_timer = font.render('RETRY', True, 'black')
+        screen.blit(retry_timer, (retry.x + 30, retry.y + 15))
+
+    # Draw elapsed time
+    if not gameover:
+        timer_text = font.render(f'Time: {elapsed_seconds} - s', True, (255, 255, 255))
+        screen.blit(timer_text, (10, 10))
+        v = elapsed_seconds
+    if gameover:
+        timer_text = font.render(f'Time: {v} - s', True, (255, 255, 255))
+        screen.blit(timer_text, (10, 10))
+
+    # Draw high score
+    high_score_text = font.render(f'High Score: {high_score} s', True, (255, 255, 255))
+    screen.blit(high_score_text, (10, 40))
+
+    # Increase difficulty
+    if elapsed_seconds > 0 and elapsed_seconds % 5 == 0 and elapsed_seconds != last_spawn_reduction:
+        last_spawn_reduction = elapsed_seconds
+        if spawn_time == 500:
+            DIFFICULTY_STEP = 200
+        spawn_time = max(spawn_time - DIFFICULTY_STEP, MIN_SPAWN_TIME)
+        pygame.time.set_timer(spawn_event, spawn_time)
+    if v > high_score and gameover:
+        save_high_score(SCORE_FILE, v)
+        high_score = elapsed_seconds
+        print(f'New high score! {v} seconds.')
+    # Update display
+    pygame.display.flip()
+    clock.tick(FPS)
